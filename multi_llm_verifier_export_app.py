@@ -77,13 +77,11 @@ class AgentState(TypedDict):
 # ==========================================
 MODEL_PRICING_PER_1M = {
     "gemini/gemini-2.5-flash": {"input": 0.15, "output": 0.60, "cache_discount": 0.75},
-    "gemini/gemini-flash-latest": {"input": 0.15, "output": 0.60, "cache_discount": 0.75},
-    "gemini/gemini-2.5-flash-lite": {"input": 0.075, "output": 0.30, "cache_discount": 0.75},
-    "gemini/gemini-2.5-pro": {"input": 1.25, "output": 5.00, "cache_discount": 0.75},
-    "gemini/gemini-pro-latest": {"input": 1.25, "output": 5.00, "cache_discount": 0.75},
-    "gemini/gemini-3.1-pro-preview": {"input": 1.25, "output": 5.00, "cache_discount": 0.75},
     "gemini/gemini-2.0-flash": {"input": 0.10, "output": 0.40, "cache_discount": 0.75},
     "gemini/gemini-1.5-flash": {"input": 0.075, "output": 0.30, "cache_discount": 0.75},
+    "gemini/gemini-flash-latest": {"input": 0.15, "output": 0.60, "cache_discount": 0.75},
+    "gemini/gemini-2.0-flash-lite": {"input": 0.075, "output": 0.30, "cache_discount": 0.75},
+    "gemini/gemini-1.5-flash-8b": {"input": 0.0375, "output": 0.15, "cache_discount": 0.75},
     "anthropic/claude-3-5-haiku-20241022": {"input": 0.80, "output": 4.00, "cache_discount": 0.90},
     "anthropic/claude-3-haiku-20240307": {"input": 0.25, "output": 1.25, "cache_discount": 0.90},
     "anthropic/claude-3-5-haiku-latest": {"input": 0.80, "output": 4.00, "cache_discount": 0.90},
@@ -95,14 +93,14 @@ MODEL_PRICING_PER_1M = {
 }
 
 def call_gemini_with_fallback(messages: list, temperature: float, api_key: str):
-    """Google Gemini 무료 티어 공식 모델(gemini-2.5-flash) 최우선 호출 및 503 과부하/429 쿼터 시 자동 폴백"""
+    """Google Gemini 무료 티어 공식 플래시 모델군 순차 호출 및 장애 시 자동 폴백"""
     candidate_models = [
         "gemini/gemini-2.5-flash",
+        "gemini/gemini-2.0-flash",
+        "gemini/gemini-1.5-flash",
         "gemini/gemini-flash-latest",
-        "gemini/gemini-2.5-flash-lite",
-        "gemini/gemini-2.5-pro",
-        "gemini/gemini-pro-latest",
-        "gemini/gemini-3.1-pro-preview",
+        "gemini/gemini-2.0-flash-lite",
+        "gemini/gemini-1.5-flash-8b",
     ]
     last_err = None
     for m in candidate_models:
@@ -123,7 +121,7 @@ def call_gemini_with_fallback(messages: list, temperature: float, api_key: str):
                 if any(k in err_str for k in ["503", "high demand", "unavailable", "temporarily unavailable"]) and attempt == 0:
                     time.sleep(1.2)
                     continue
-                break  # 다른 에러이거나 재시도 실패 시 다음 후보 모델로 즉시 전환
+                break  # 다른 에러이거나 재시도 실패 시 다음 무료 플래시 모델로 즉시 전환
     if last_err:
         raise last_err
 

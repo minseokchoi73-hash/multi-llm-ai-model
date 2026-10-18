@@ -1,0 +1,28 @@
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
+# Python cache & artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Streamlit secrets (CRITICAL: Never commit API keys!)
+.streamlit/secrets.toml
+.env
+*.env.local
+
+# Generated reports & temporary files
+*.pdf
+cost_receipt_*.csv
+verification_bundle_*.zip
+verified_output_*
+verified_result_*
+
+# OS metadata
+.DS_Store
+Thumbs.db

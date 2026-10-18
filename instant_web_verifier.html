@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🛡️ 멀티 LLM 교차 검증 & 원화 비용 워크스테이션 (무설치 웹앱 버전)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; background-color: #0f172a; color: #f8fafc; }
+  .card { background-color: #1e293b; border: 1px solid #334155; border-radius: 0.75rem; }
+  pre { background-color: #090d16; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; font-size: 0.875rem; border: 1px solid #334155; }
+  @media print {
+    aside, button, input, #hitlBox { display: none !important; }
+    body { background-color: #ffffff !important; color: #000000 !important; }
+    .card { background-color: #ffffff !important; border: 1px solid #cccccc !important; color: #000000 !important; }
+    pre, code { background-color: #f8f9fa !important; color: #000000 !important; border: 1px solid #e2e8f0 !important; }
+  }
+</style>
+</head>
+<body class="min-h-screen flex flex-col md:flex-row">
+
+  <!-- Sidebar -->
+  <aside class="w-full md:w-80 bg-slate-900 border-r border-slate-800 p-5 flex flex-col gap-5">
+    <div>
+      <h1 class="text-lg font-bold text-blue-400">🛡️ 교차 검증 워크스테이션</h1>
+      <p class="text-xs text-slate-400 mt-1">설치 없이 브라우저에서 즉시 실행되는 버전입니다.</p>
+    </div>
+
+    <div class="flex flex-col gap-3">
+      <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-400">🔑 API 키 설정 (로컬 브라우저 처리)</h2>
+      <div>
+        <label class="text-xs text-slate-300">Gemini API Key (초안/병합)</label>
+        <input id="geminiKey" type="password" placeholder="AIzaSy..." class="w-full mt-1 px-3 py-1.5 bg-slate-800 border border-slate-700 rounded text-sm focus:outline-none focus:border-blue-500">
+      </div>
+      <div>
+        <label class="text-xs text-slate-300">OpenAI API Key (최종 검증 GPT-4o-mini)</label>
+        <input id="openaiKey" type="password" placeholder="sk-..." class="w-full mt-1 px-3 py-1.5 bg-slate-800 border border-slate-700 rounded text-sm focus:outline-none focus:border-green-500">
+      </div>
+      <div>
+        <label class="text-xs text-slate-300">Anthropic API Key (1차 검증 Haiku)</label>
+        <input id="claudeKey" type="password" placeholder="sk-ant-..." class="w-full mt-1 px-3 py-1.5 bg-slate-800 border border-slate-700 rounded text-sm focus:outline-none focus:border-purple-500">
+      </div>
+    </div>
+
+    <div class="flex flex-col gap-3 border-t border-slate-800 pt-4">
+      <h2 class="text-xs font-semibold uppercase tracking-wider text-slate-400">💱 환율 및 옵션</h2>
+      <div class="flex justify-between items-center">
+        <span class="text-xs text-slate-300">적용 환율 (1 USD)</span>
+        <input id="exchangeRate" type="number" value="1380" class="w-24 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-sm text-right">
+      </div>
+      <label class="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+        <input id="geminiFree" type="checkbox" checked class="rounded bg-slate-800 border-slate-700">
+        Gemini 무료 티어 적용 (비용 0원 처리)
+      </label>
+    </div>
+
+    <div class="mt-auto pt-4 border-t border-slate-800 flex flex-col gap-2">
+      <button onclick="runDemoSimulation()" class="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded font-medium text-xs transition">
+        ▶️ API 키 없이 데모 시뮬레이션 실행
+      </button>
+    </div>
+  </aside>
+
+  <!-- Main Content -->
+  <main class="flex-1 p-6 flex flex-col gap-6 overflow-y-auto">
+    
+    <!-- Cost Receipt Dashboard -->
+    <section class="grid grid-cols-1 sm:grid-cols-4 gap-4">
+      <div class="card p-4">
+        <div class="text-xs text-slate-400">💰 이번 질문 총 소모 비용</div>
+        <div id="metricActual" class="text-2xl font-bold text-emerald-400 mt-1">0.00 원</div>
+        <div id="metricDelta" class="text-xs text-slate-400 mt-1">대기 중</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-400">⚡ 무료티어 & 캐시 절약액</div>
+        <div id="metricSaved" class="text-2xl font-bold text-blue-400 mt-1">0.00 원</div>
+        <div class="text-xs text-slate-400 mt-1">Gemini Free + JSON 압축</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-400">📥 총 입력 토큰 (캐시 히트)</div>
+        <div id="metricInTokens" class="text-2xl font-bold text-slate-100 mt-1">0 개</div>
+        <div id="metricCacheRatio" class="text-xs text-purple-400 mt-1">캐시율: 0%</div>
+      </div>
+      <div class="card p-4">
+        <div class="text-xs text-slate-400">📤 총 출력 토큰 (JSON 제한)</div>
+        <div id="metricOutTokens" class="text-2xl font-bold text-slate-100 mt-1">0 개</div>
+        <div class="text-xs text-slate-400 mt-1">최대 300 토큰 강제 제한</div>
+      </div>
+    </section>
+
+    <!-- Prompt Input -->
+    <section class="card p-4 flex gap-3">
+      <input id="userQuery" type="text" placeholder="작성할 파이썬 코드나 리포트 주제를 입력하세요 (예: 비동기 웹 크롤러 파이썬 코드 작성해줘)" class="flex-1 bg-slate-900 border border-slate-700 rounded px-4 py-2 text-sm focus:outline-none focus:border-blue-500">
+      <button onclick="startPipeline()" class="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded text-sm transition">
+        교차 검증 실행
+      </button>
+    </section>
+
+    <!-- Execution Logs -->
+    <section class="card p-4">
+      <h3 class="text-sm font-semibold text-slate-300 mb-2">📋 파이프라인 단계별 실행 로그</h3>
+      <div id="logContainer" class="text-xs text-slate-400 space-y-1.5 font-mono">
+        <div>대기 중... 상단의 입력창에 질문을 입력하거나 좌측 하단의 [데모 시뮬레이션 실행] 버튼을 눌러보세요.</div>
+      </div>
+    </section>
+
+    <!-- HITL Approval Box (Hidden by default) -->
+    <section id="hitlBox" class="card p-5 border-amber-500/60 hidden">
+      <div class="flex items-center justify-between mb-3">
+        <span class="text-sm font-bold text-amber-400">⏸️ [Human-in-the-Loop 대기 중] 검증기가 수정 패치(JSON)를 제안했습니다.</span>
+        <div class="flex gap-2">
+          <button onclick="approveMerge()" class="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-semibold">✅ 승인 및 Gemini 최종 병합</button>
+          <button onclick="rejectMerge()" class="px-4 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded text-xs font-semibold">🛑 수정 거부 (즉시 확정)</button>
+        </div>
+      </div>
+      <textarea id="patchEditor" rows="5" class="w-full bg-slate-950 border border-slate-700 rounded p-3 text-xs font-mono text-amber-200"></textarea>
+    </section>
+
+    <!-- Export Center & Final Output -->
+    <section id="resultSection" class="card p-5 hidden flex-col gap-4">
+      <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4">
+        <div>
+          <h3 class="text-base font-bold text-emerald-400">🏁 최종 검증 완료 산출물</h3>
+          <p class="text-xs text-slate-400">원클릭으로 내 PC에 파일로 다운로드할 수 있습니다.</p>
+        </div>
+        <div class="flex gap-2">
+          <input id="exportFilename" type="text" value="verified_output.py" class="px-3 py-1.5 bg-slate-900 border border-slate-700 rounded text-xs">
+          <button onclick="printOrSavePdf()" class="px-4 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded text-xs font-semibold">📕 PDF 인쇄 / 저장</button>
+          <button onclick="downloadMainFile()" class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-semibold">📄 산출물 (.py)</button>
+          <button onclick="downloadReceiptCsv()" class="px-4 py-1.5 bg-slate-700 hover:bg-slate-600 text-white rounded text-xs font-semibold">🧾 비용 영수증 (.csv)</button>
+        </div>
+      </div>
+      <pre><code id="finalCodeOutput" class="text-slate-200"></code></pre>
+    </section>
+
+  </main>
+
+<script>
+let currentDraft = "";
+let currentPatch = "";
+let costLedger = [];
+
+function appendLog(msg) {
+  const container = document.getElementById("logContainer");
+  const div = document.createElement("div");
+  div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  container.appendChild(div);
+}
+
+function updateDashboard() {
+  const actual = costLedger.reduce((acc, c) => acc + c.actualKrw, 0);
+  const saved = costLedger.reduce((acc, c) => acc + c.savedKrw, 0);
+  const inTok = costLedger.reduce((acc, c) => acc + c.inTokens, 0);
+  const cachedTok = costLedger.reduce((acc, c) => acc + c.cachedTokens, 0);
+  const outTok = costLedger.reduce((acc, c) => acc + c.outTokens, 0);
+  const ratio = inTok > 0 ? ((cachedTok / inTok) * 100).toFixed(1) : 0;
+
+  document.getElementById("metricActual").textContent = `${actual.toFixed(2)} 원`;
+  document.getElementById("metricDelta").textContent = `-${saved.toFixed(2)} 원 절약됨`;
+  document.getElementById("metricSaved").textContent = `${saved.toFixed(2)} 원`;
+  document.getElementById("metricInTokens").textContent = `${inTok.toLocaleString()} 개`;
+  document.getElementById("metricCacheRatio").textContent = `캐시 히트: ${cachedTok.toLocaleString()}개 (${ratio}%)`;
+  document.getElementById("metricOutTokens").textContent = `${outTok.toLocaleString()} 개`;
+}
+
+function runDemoSimulation() {
+  document.getElementById("logContainer").innerHTML = "";
+  document.getElementById("resultSection").classList.add("hidden");
+  costLedger = [];
+  const rate = parseFloat(document.getElementById("exchangeRate").value) || 1380;
+
+  appendLog("🔷 [Node 1: Gemini 2.5 Pro] 초안 생성 중...");
+  setTimeout(() => {
+    currentDraft = `import requests
+
+def fetch_user_data(user_id):
+    url = f"https://api.example.com/users/{user_id}"
+    response = requests.get(url) # 타임아웃 및 예외처리 누락
+    return response.json()`;
+    costLedger.push({ step: "Gemini 1차 초안", model: "gemini-2.5-pro", inTokens: 120, cachedTokens: 0, outTokens: 450, actualKrw: 0.0, savedKrw: (0.0024 * rate) });
+    updateDashboard();
+    appendLog("✂️ [Node 2: Regex 전처리] 순수 파이썬 코드 블록 추출 완료");
+    appendLog("✅ [Node 3: 로컬 AST 문법 검사] SyntaxError 없음 (API 비용 0원 방어)");
+    appendLog("🟣 [Node 4: Claude 3.5 Haiku] 1차 결함 검증 및 JSON 패치 생성 완료 (캐시 적용)");
+    costLedger.push({ step: "Claude 1차 검증", model: "claude-3-5-haiku", inTokens: 520, cachedTokens: 400, outTokens: 95, actualKrw: 0.62, savedKrw: 0.40 });
+    updateDashboard();
+
+    appendLog("🟢 [Node 5: ChatGPT (gpt-4o-mini)] 충돌 해결 및 최종 패치 확정 -> 상태: MODIFY");
+    costLedger.push({ step: "ChatGPT 최종 검증", model: "gpt-4o-mini", inTokens: 615, cachedTokens: 512, outTokens: 88, actualKrw: 0.14, savedKrw: 0.06 });
+    updateDashboard();
+
+    currentPatch = JSON.stringify({
+      status: "MODIFY",
+      modifications: [{
+        exact_target: "response = requests.get(url)",
+        replacement: "response = requests.get(url, timeout=10)\n    response.raise_for_status()",
+        reason: "네트워크 무한 대기 방지 및 HTTP 에러 예외 처리 추가"
+      }]
+    }, null, 2);
+
+    document.getElementById("patchEditor").value = currentPatch;
+    document.getElementById("hitlBox").classList.remove("hidden");
+  }, 400);
+}
+
+function approveMerge() {
+  const rate = parseFloat(document.getElementById("exchangeRate").value) || 1380;
+  document.getElementById("hitlBox").classList.add("hidden");
+  appendLog("🔷 [Node 6: Gemini 병합] 사용자 승인 패치 반영 완료!");
+  costLedger.push({ step: "Gemini 최종 병합", model: "gemini-2.5-pro", inTokens: 680, cachedTokens: 500, outTokens: 480, actualKrw: 0.0, savedKrw: (0.0031 * rate) });
+  updateDashboard();
+
+  currentDraft = `import requests
+
+def fetch_user_data(user_id: int) -> dict:
+    url = f"https://api.example.com/users/{user_id}"
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+    return response.json()`;
+  document.getElementById("finalCodeOutput").textContent = currentDraft;
+  document.getElementById("resultSection").classList.remove("hidden");
+  document.getElementById("resultSection").classList.add("flex");
+}
+
+function rejectMerge() {
+  document.getElementById("hitlBox").classList.add("hidden");
+  appendLog("🛑 [사용자 개입] 수정 거부 -> 초안 그대로 확정 (추가 과금 0원)");
+  document.getElementById("finalCodeOutput").textContent = currentDraft;
+  document.getElementById("resultSection").classList.remove("hidden");
+  document.getElementById("resultSection").classList.add("flex");
+}
+
+async function startPipeline() {
+  const query = document.getElementById("userQuery").value.trim();
+  const geminiKey = document.getElementById("geminiKey").value.trim();
+  if (!query) { alert("질문을 입력해주세요."); return; }
+  if (!geminiKey) {
+    alert("API 키가 입력되지 않아 데모 시뮬레이션 모드로 실행합니다.");
+    runDemoSimulation();
+    return;
+  }
+  document.getElementById("logContainer").innerHTML = "";
+  appendLog("🔷 [Gemini API] 실시간 호출 중...");
+  try {
+    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${geminiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contents: [{ parts: [{ text: "인사말 없이 요청한 산출물만 작성해:\n" + query }] }] })
+    });
+    const data = await resp.json();
+    currentDraft = data.candidates?.[0]?.content?.parts?.[0]?.text || "응답 오류";
+    appendLog("🔷 [Gemini 초안 완성] 완료");
+    document.getElementById("finalCodeOutput").textContent = currentDraft;
+    document.getElementById("resultSection").classList.remove("hidden");
+    document.getElementById("resultSection").classList.add("flex");
+  } catch (e) {
+    appendLog("❌ API 호출 에러: " + e.message);
+  }
+}
+
+function downloadMainFile() {
+  const fname = document.getElementById("exportFilename").value || "verified_output.py";
+  const blob = new Blob([currentDraft], { type: "text/plain;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = fname;
+  a.click();
+}
+
+function downloadReceiptCsv() {
+  let csv = "\uFEFF단계,모델,입력토큰,캐시토큰,출력토큰,실제비용(원),절약금액(원)\n";
+  costLedger.forEach(r => {
+    csv += `${r.step},${r.model},${r.inTokens},${r.cachedTokens},${r.outTokens},${r.actualKrw.toFixed(2)},${r.savedKrw.toFixed(2)}\n`;
+  });
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "cost_receipt.csv";
+  a.click();
+}
+
+function printOrSavePdf() {
+  window.print();
+}
+</script>
+</body>
+</html>

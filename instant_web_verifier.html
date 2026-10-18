@@ -242,7 +242,7 @@ async function startPipeline() {
   document.getElementById("logContainer").innerHTML = "";
   appendLog("🔷 [Gemini API] 실시간 호출 중...");
   try {
-    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${geminiKey}`, {
+    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent?key=${geminiKey}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ contents: [{ parts: [{ text: "인사말 없이 요청한 산출물만 작성해:\n" + query }] }] })

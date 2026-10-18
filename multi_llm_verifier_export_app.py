@@ -75,10 +75,45 @@ class AgentState(TypedDict):
 # 2. 모델 단가 및 비용 계산
 # ==========================================
 MODEL_PRICING_PER_1M = {
+    "gemini/gemini-3.1-pro-preview": {"input": 1.25, "output": 5.00, "cache_discount": 0.75},
     "gemini/gemini-2.5-pro": {"input": 1.25, "output": 5.00, "cache_discount": 0.75},
+    "gemini/gemini-2.5-flash": {"input": 0.15, "output": 0.60, "cache_discount": 0.75},
+    "gemini/gemini-1.5-pro": {"input": 1.25, "output": 5.00, "cache_discount": 0.75},
+    "gemini/gemini-1.5-flash": {"input": 0.075, "output": 0.30, "cache_discount": 0.75},
     "anthropic/claude-3-5-haiku-latest": {"input": 0.80, "output": 4.00, "cache_discount": 0.90},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60, "cache_discount": 0.50},
 }
+
+def call_gemini_with_fallback(messages: list, temperature: float, api_key: str):
+    """Google Gemini 최신 모델(3.1-pro-preview) 호출 및 모델 버전별 자동 폴백 지원"""
+    candidate_models = [
+        "gemini/gemini-3.1-pro-preview",
+        "gemini/gemini-2.5-flash",
+        "gemini/gemini-1.5-pro",
+        "gemini/gemini-1.5-flash",
+    ]
+    last_err = None
+    for m in candidate_models:
+        try:
+            resp = litellm.completion(
+                model=m,
+                messages=messages,
+                temperature=temperature,
+                api_key=api_key
+            )
+            return resp, m
+        except litellm.NotFoundError as e:
+            last_err = e
+            continue
+        except Exception as e:
+            err_str = str(e).lower()
+            if "not_found" in err_str or "no longer available" in err_str or "404" in err_str:
+                last_err = e
+                continue
+            raise e
+    if last_err:
+        raise last_err
+
 
 def extract_cost_entry(response: Any, step_name: str, model_name: str) -> Dict[str, Any]:
     usage = getattr(response, "usage", None)
@@ -342,9 +377,8 @@ def upload_to_github_gist(filename: str, content: str, audit_summary: str, githu
 
 # [Node 1: Gemini 초안 생성 (Heavy Lifter)]
 def gemini_draft_node(state: AgentState) -> dict:
-    model_name = "gemini/gemini-2.5-pro"
-    prompt = state["user_query"]
     step_label = "Node 1: Gemini 1차 초안 생성"
+    prompt = state["user_query"]
 
     gemini_key = get_api_key("GEMINI_API_KEY")
     if not gemini_key:
@@ -358,7 +392,7 @@ def gemini_draft_node(state: AgentState) -> dict:
         return {
             "raw_draft": f"```python\n{mock_code}\n```",
             "cost_ledger": state.get("cost_ledger", []) + [{
-                "단계": step_label, "모델": "gemini-2.5-pro(Demo)",
+                "단계": step_label, "모델": "gemini-3.1-pro(Demo)",
                 "입력 토큰": 150, "캐시 히트 토큰": 0, "출력 토큰": 350,
                 "실제 비용(원)": 0.0, "절약 금액(원)": 3.3,
                 "actual_krw_raw": 0.0, "saved_krw_raw": 3.3
@@ -366,8 +400,7 @@ def gemini_draft_node(state: AgentState) -> dict:
             "logs": state.get("logs", []) + [f"🔷 [{step_label}] 완료 (초안 생성 완료)"]
         }
 
-    response = litellm.completion(
-        model=model_name,
+    response, used_model = call_gemini_with_fallback(
         messages=[
             {"role": "system", "content": "인사말이나 부연 설명 없이 요청한 코드 또는 본문만 즉시 작성하십시오. 코드인 경우 반드시 마크다운 코드 블록(```python ... ```)으로 감싸십시오."},
             {"role": "user", "content": prompt}
@@ -375,13 +408,13 @@ def gemini_draft_node(state: AgentState) -> dict:
         temperature=0.2,
         api_key=gemini_key
     )
-    cost_entry = extract_cost_entry(response, step_label, model_name)
+    cost_entry = extract_cost_entry(response, step_label, used_model)
     content = response.choices[0].message.content or ""
     
     return {
         "raw_draft": content,
         "cost_ledger": state.get("cost_ledger", []) + [cost_entry],
-        "logs": state.get("logs", []) + [f"🔷 [{step_label}] 완료 (비용: {cost_entry['실제 비용(원)']:.2f}원)"]
+        "logs": state.get("logs", []) + [f"🔷 [{step_label} ({used_model.split('/')[-1]})] 완료 (비용: {cost_entry['실제 비용(원)']:.2f}원)"]
     }
 
 # [Node 2: Regex 전처리 필터] (인사말 제거, 핵심 코드/본문만 추출)
@@ -525,7 +558,6 @@ def gpt_validator_node(state: AgentState) -> dict:
 
 # [Node 5: Gemini 패치 병합]
 def gemini_merge_node(state: AgentState) -> dict:
-    model_name = "gemini/gemini-2.5-pro"
     step_label = f"Node 5: Gemini 패치 병합 (L{state['iteration']})"
 
     gemini_key = get_api_key("GEMINI_API_KEY")
@@ -544,7 +576,7 @@ def gemini_merge_node(state: AgentState) -> dict:
         return {
             "clean_content": clean_text,
             "cost_ledger": state.get("cost_ledger", []) + [{
-                "단계": step_label, "모델": "gemini-2.5-pro(Demo)",
+                "단계": step_label, "모델": "gemini-3.1-pro(Demo)",
                 "입력 토큰": 680, "캐시 히트 토큰": 500, "출력 토큰": 480,
                 "실제 비용(원)": 0.0, "절약 금액(원)": 4.28,
                 "actual_krw_raw": 0.0, "saved_krw_raw": 4.28
@@ -558,14 +590,13 @@ def gemini_merge_node(state: AgentState) -> dict:
         f"[원본 산출물]\n{state['clean_content']}\n\n"
         f"[수정 지시서]\n{state['gpt_feedback']}"
     )
-    response = litellm.completion(
-        model=model_name,
+    response, used_model = call_gemini_with_fallback(
         messages=[{"role": "user", "content": prompt}],
         temperature=0.1,
         api_key=gemini_key
     )
     merged_raw = response.choices[0].message.content or ""
-    cost_entry = extract_cost_entry(response, step_label, model_name)
+    cost_entry = extract_cost_entry(response, step_label, used_model)
 
     py_blocks = re.findall(r"```(?:python|py)?\s*\n(.*?)```", merged_raw, re.DOTALL | re.IGNORECASE)
     any_blocks = re.findall(r"```(?:\w+)?\s*\n(.*?)```", merged_raw, re.DOTALL)

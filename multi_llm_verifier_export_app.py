@@ -9,6 +9,7 @@ import io
 import zipfile
 import json
 import textwrap
+import time
 from datetime import datetime
 from typing import TypedDict, List, Literal, Dict, Any
 import streamlit as st
@@ -94,7 +95,7 @@ MODEL_PRICING_PER_1M = {
 }
 
 def call_gemini_with_fallback(messages: list, temperature: float, api_key: str):
-    """Google Gemini 무료 티어 공식 모델(gemini-2.5-flash) 최우선 호출 및 쿼터/버전 에러 시 자동 폴백"""
+    """Google Gemini 무료 티어 공식 모델(gemini-2.5-flash) 최우선 호출 및 503 과부하/429 쿼터 시 자동 폴백"""
     candidate_models = [
         "gemini/gemini-2.5-flash",
         "gemini/gemini-flash-latest",
@@ -105,23 +106,24 @@ def call_gemini_with_fallback(messages: list, temperature: float, api_key: str):
     ]
     last_err = None
     for m in candidate_models:
-        try:
-            resp = litellm.completion(
-                model=m,
-                messages=messages,
-                temperature=temperature,
-                api_key=api_key
-            )
-            return resp, m
-        except (litellm.RateLimitError, litellm.NotFoundError) as e:
-            last_err = e
-            continue
-        except Exception as e:
-            err_str = str(e).lower()
-            if any(k in err_str for k in ["429", "quota", "resource_exhausted", "rate_limit", "404", "not_found", "no longer available", "limit: 0"]):
+        for attempt in range(2):
+            try:
+                resp = litellm.completion(
+                    model=m,
+                    messages=messages,
+                    temperature=temperature,
+                    api_key=api_key,
+                    custom_llm_provider="gemini"
+                )
+                return resp, m
+            except Exception as e:
                 last_err = e
-                continue
-            raise e
+                err_str = str(e).lower()
+                # 503 일시적 과부하/스파이크 발생 시 1회 1.2초 대기 후 재시도
+                if any(k in err_str for k in ["503", "high demand", "unavailable", "temporarily unavailable"]) and attempt == 0:
+                    time.sleep(1.2)
+                    continue
+                break  # 다른 에러이거나 재시도 실패 시 다음 후보 모델로 즉시 전환
     if last_err:
         raise last_err
 
@@ -135,19 +137,24 @@ def call_claude_with_fallback(messages: list, max_tokens: int, temperature: floa
     ]
     last_err = None
     for m in candidate_models:
-        try:
-            resp = litellm.completion(
-                model=m,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                api_key=api_key,
-                custom_llm_provider="anthropic"
-            )
-            return resp, m
-        except Exception as e:
-            last_err = e
-            continue
+        for attempt in range(2):
+            try:
+                resp = litellm.completion(
+                    model=m,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    api_key=api_key,
+                    custom_llm_provider="anthropic"
+                )
+                return resp, m
+            except Exception as e:
+                last_err = e
+                err_str = str(e).lower()
+                if any(k in err_str for k in ["503", "529", "overloaded", "unavailable"]) and attempt == 0:
+                    time.sleep(1.2)
+                    continue
+                break
     if last_err:
         raise last_err
 
@@ -161,19 +168,24 @@ def call_gpt_with_fallback(messages: list, max_tokens: int, temperature: float, 
     ]
     last_err = None
     for m in candidate_models:
-        try:
-            resp = litellm.completion(
-                model=m,
-                messages=messages,
-                response_format={"type": "json_object"},
-                max_tokens=max_tokens,
-                temperature=temperature,
-                api_key=api_key
-            )
-            return resp, m
-        except Exception as e:
-            last_err = e
-            continue
+        for attempt in range(2):
+            try:
+                resp = litellm.completion(
+                    model=m,
+                    messages=messages,
+                    response_format={"type": "json_object"},
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    api_key=api_key
+                )
+                return resp, m
+            except Exception as e:
+                last_err = e
+                err_str = str(e).lower()
+                if any(k in err_str for k in ["503", "500", "server_error", "rate_limit"]) and attempt == 0:
+                    time.sleep(1.2)
+                    continue
+                break
     if last_err:
         raise last_err
 

@@ -624,7 +624,6 @@ def route_after_gpt(state: AgentState) -> Literal["gemini_merge", "__end__"]:
         return END
     return "gemini_merge"
 
-@st.cache_resource
 def get_compiled_graph(enable_hitl: bool = False):
     builder = StateGraph(AgentState)
     builder.add_node("gemini_draft", gemini_draft_node)

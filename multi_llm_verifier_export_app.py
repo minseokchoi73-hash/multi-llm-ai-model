@@ -82,6 +82,13 @@ MODEL_PRICING_PER_1M = {
     "gemini/gemini-flash-latest": {"input": 0.15, "output": 0.60, "cache_discount": 0.75},
     "gemini/gemini-2.0-flash-lite": {"input": 0.075, "output": 0.30, "cache_discount": 0.75},
     "gemini/gemini-1.5-flash-8b": {"input": 0.0375, "output": 0.15, "cache_discount": 0.75},
+    "anthropic/claude-haiku-4-5": {"input": 1.00, "output": 5.00, "cache_discount": 0.90},
+    "anthropic/claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00, "cache_discount": 0.90},
+    "anthropic/claude-haiku-5-5": {"input": 0.10, "output": 0.50, "cache_discount": 0.90},
+    "anthropic/claude-sonnet-4-5": {"input": 3.00, "output": 15.00, "cache_discount": 0.90},
+    "anthropic/claude-sonnet-4-5-20250929": {"input": 3.00, "output": 15.00, "cache_discount": 0.90},
+    "anthropic/claude-sonnet-5-5": {"input": 2.00, "output": 10.00, "cache_discount": 0.90},
+    "anthropic/claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "cache_discount": 0.90},
     "anthropic/claude-3-5-haiku-20241022": {"input": 0.80, "output": 4.00, "cache_discount": 0.90},
     "anthropic/claude-3-haiku-20240307": {"input": 0.25, "output": 1.25, "cache_discount": 0.90},
     "anthropic/claude-3-5-haiku-latest": {"input": 0.80, "output": 4.00, "cache_discount": 0.90},
@@ -126,12 +133,17 @@ def call_gemini_with_fallback(messages: list, temperature: float, api_key: str):
         raise last_err
 
 def call_claude_with_fallback(messages: list, max_tokens: int, temperature: float, api_key: str):
-    """Anthropic Claude 모델 호출 및 버전별 자동 폴백 지원"""
+    """Anthropic Claude 최신 정식 모델(Haiku 4.5/5.5, Sonnet 4.5/5.5) 순차 호출 및 자동 폴백"""
     candidate_models = [
-        "anthropic/claude-3-5-haiku-20241022",
-        "anthropic/claude-3-haiku-20240307",
+        "anthropic/claude-haiku-4-5",
+        "anthropic/claude-haiku-4-5-20251001",
+        "anthropic/claude-haiku-5-5",
+        "anthropic/claude-sonnet-4-5",
+        "anthropic/claude-sonnet-4-5-20250929",
+        "anthropic/claude-sonnet-5-5",
+        "anthropic/claude-sonnet-4-6",
         "anthropic/claude-3-5-haiku-latest",
-        "anthropic/claude-3-5-sonnet-20241022",
+        "anthropic/claude-3-5-haiku-20241022",
     ]
     last_err = None
     for m in candidate_models:

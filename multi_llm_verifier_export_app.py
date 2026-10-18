@@ -516,14 +516,16 @@ def gemini_draft_node(state: AgentState) -> dict:
             "logs": state.get("logs", []) + [f"🔷 [{step_label}] 완료 (초안 생성 완료)"]
         }
 
-    current_date = datetime.now().strftime("%Y년 %m월 %d일")
+    now = datetime.now()
+    current_date = now.strftime("%Y년 %m월 %d일")
+    past_cutoff_year = now.year - 2
     sys_prompt = (
         f"당신은 실시간 최신 정보 분석과 최고 수준의 전문성을 갖춘 수석 연구원 겸 전문 엔지니어입니다. "
-        f"현재 기준 시점은 {current_date}입니다.\n"
+        f"사용자가 질의를 요청한 바로 오늘, 실시간 현재 시점은 {current_date}입니다.\n"
         f"[필수 작성 지침]\n"
-        f"1. 최신 시점 전면 반영: 과거(2023년~2024년 등) 시점의 낡은 정보에 머무르지 말고, "
-        f"반드시 현재 시점({current_date}) 기준의 가장 최신 진행 상황, 최근 법안 처리/의결 현황, 규제 기관 및 의회 입장, "
-        f"최신 쟁점 및 향후 전망을 빠짐없이 상세히 반영하여 보고서를 작성하십시오.\n"
+        f"1. 실시간 시점 전면 반영: 과거({past_cutoff_year}년 이전 등) 모델의 고정 학습 데이터 시점에 머무르지 말고, "
+        f"반드시 실시간 구글 검색(Google Search)을 활용하여 오늘({current_date}) 기준의 가장 최신 진행 상황, "
+        f"최근 법안 처리/의결 현황, 규제 기관 및 의회 입장, 최신 쟁점 및 향후 전망을 빠짐없이 상세히 반영하여 보고서를 작성하십시오.\n"
         f"2. 직접 작성: 인사말(안녕하세요 등)이나 불필요한 메타 서술 없이 즉시 완성된 최종 본문/리포트만 출력하십시오.\n"
         f"3. 코드 요청인 경우: 반드시 마크다운 코드 블록(```python ... ```)으로 감싸십시오."
     )

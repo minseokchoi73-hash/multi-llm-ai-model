@@ -10,6 +10,7 @@ import zipfile
 import json
 import textwrap
 import time
+import urllib.request
 from datetime import datetime
 from typing import TypedDict, List, Literal, Dict, Any
 import streamlit as st
@@ -99,8 +100,8 @@ MODEL_PRICING_PER_1M = {
     "openai/gpt-4o": {"input": 2.50, "output": 10.00, "cache_discount": 0.50},
 }
 
-def call_gemini_with_fallback(messages: list, temperature: float, api_key: str):
-    """Google Gemini 무료 티어 공식 플래시 모델군 순차 호출 및 장애 시 자동 폴백"""
+def call_gemini_with_fallback(messages: list, temperature: float, api_key: str, enable_search: bool = True):
+    """Google Gemini 무료 티어 공식 플래시 모델군 순차 호출 및 장애 시 자동 폴백 (실시간 Google Search Grounding 지원)"""
     candidate_models = [
         "gemini/gemini-2.5-flash",
         "gemini/gemini-2.0-flash",
@@ -109,21 +110,38 @@ def call_gemini_with_fallback(messages: list, temperature: float, api_key: str):
         "gemini/gemini-2.0-flash-lite",
         "gemini/gemini-1.5-flash-8b",
     ]
+    tools = [{"googleSearch": {}}] if enable_search else None
     last_err = None
     for m in candidate_models:
         for attempt in range(2):
             try:
-                resp = litellm.completion(
-                    model=m,
-                    messages=messages,
-                    temperature=temperature,
-                    api_key=api_key,
-                    custom_llm_provider="gemini"
-                )
+                kwargs = {
+                    "model": m,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "api_key": api_key,
+                    "custom_llm_provider": "gemini",
+                }
+                if tools:
+                    kwargs["tools"] = tools
+                resp = litellm.completion(**kwargs)
                 return resp, m
             except Exception as e:
                 last_err = e
                 err_str = str(e).lower()
+                # 툴 호출 미지원 시 툴 없이 1회 재시도
+                if tools and any(k in err_str for k in ["tool", "googlesearch", "function"]):
+                    try:
+                        resp = litellm.completion(
+                            model=m,
+                            messages=messages,
+                            temperature=temperature,
+                            api_key=api_key,
+                            custom_llm_provider="gemini",
+                        )
+                        return resp, m
+                    except Exception as e2:
+                        last_err = e2
                 # 503 일시적 과부하/스파이크 발생 시 1회 1.2초 대기 후 재시도
                 if any(k in err_str for k in ["503", "high demand", "unavailable", "temporarily unavailable"]) and attempt == 0:
                     time.sleep(1.2)
@@ -244,12 +262,24 @@ def extract_cost_entry(response: Any, step_name: str, model_name: str) -> Dict[s
 # 3. PDF 생성 및 파일 내보내기 함수
 # ==========================================
 def register_korean_font() -> str:
-    """Windows 및 주요 OS의 기본 한글 폰트를 자동 등록하여 글자 깨짐 방지"""
+    """Windows, Linux(Streamlit Cloud), macOS 및 자체 번들 폰트를 자동 등록하여 한글 글자 깨짐 완전 방지"""
+    local_font_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+    local_font_path = os.path.join(local_font_dir, "NanumGothic.ttf")
+    if not os.path.exists(local_font_path):
+        try:
+            os.makedirs(local_font_dir, exist_ok=True)
+            font_url = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf"
+            urllib.request.urlretrieve(font_url, local_font_path)
+        except Exception:
+            pass
+
     candidates = [
+        ("NanumGothic", local_font_path),
+        ("NanumGothicLinux", "/usr/share/fonts/truetype/nanum/NanumGothic.ttf"),
+        ("NanumBarunLinux", "/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf"),
         ("MalgunGothic", "C:/Windows/Fonts/malgun.ttf"),
         ("Gulim", "C:/Windows/Fonts/gulim.ttc"),
         ("Batang", "C:/Windows/Fonts/batang.ttc"),
-        ("NanumGothic", "/usr/share/fonts/truetype/nanum/NanumGothic.ttf"),
         ("AppleGothic", "/System/Library/Fonts/Supplemental/AppleGothic.ttf"),
     ]
     for name, path in candidates:
@@ -257,6 +287,7 @@ def register_korean_font() -> str:
             try:
                 if name not in pdfmetrics.getRegisteredFontNames():
                     pdfmetrics.registerFont(TTFont(name, path))
+                pdfmetrics.registerFontFamily(name, normal=name, bold=name, italic=name, boldItalic=name)
                 return name
             except Exception:
                 continue
@@ -332,7 +363,7 @@ def build_export_pdf(state_vals: Dict[str, Any], ts_str: str) -> bytes:
     # 1. 헤더 영역
     story.append(Paragraph("멀티 AI 모델 연합 교차 검증 최종 리포트", title_style))
     story.append(Paragraph(
-        f"생성 일시: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 엔진: Gemini 2.5 Pro + Claude 3.5 Haiku + ChatGPT (gpt-4o-mini)",
+        f"생성 일시: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 엔진: Google Gemini (실시간 검색) + Anthropic Claude + OpenAI ChatGPT",
         subtitle_style
     ))
 
@@ -485,13 +516,26 @@ def gemini_draft_node(state: AgentState) -> dict:
             "logs": state.get("logs", []) + [f"🔷 [{step_label}] 완료 (초안 생성 완료)"]
         }
 
+    current_date = datetime.now().strftime("%Y년 %m월 %d일")
+    sys_prompt = (
+        f"당신은 실시간 최신 정보 분석과 최고 수준의 전문성을 갖춘 수석 연구원 겸 전문 엔지니어입니다. "
+        f"현재 기준 시점은 {current_date}입니다.\n"
+        f"[필수 작성 지침]\n"
+        f"1. 최신 시점 전면 반영: 과거(2023년~2024년 등) 시점의 낡은 정보에 머무르지 말고, "
+        f"반드시 현재 시점({current_date}) 기준의 가장 최신 진행 상황, 최근 법안 처리/의결 현황, 규제 기관 및 의회 입장, "
+        f"최신 쟁점 및 향후 전망을 빠짐없이 상세히 반영하여 보고서를 작성하십시오.\n"
+        f"2. 직접 작성: 인사말(안녕하세요 등)이나 불필요한 메타 서술 없이 즉시 완성된 최종 본문/리포트만 출력하십시오.\n"
+        f"3. 코드 요청인 경우: 반드시 마크다운 코드 블록(```python ... ```)으로 감싸십시오."
+    )
+
     response, used_model = call_gemini_with_fallback(
         messages=[
-            {"role": "system", "content": "인사말이나 부연 설명 없이 요청한 코드 또는 본문만 즉시 작성하십시오. 코드인 경우 반드시 마크다운 코드 블록(```python ... ```)으로 감싸십시오."},
+            {"role": "system", "content": sys_prompt},
             {"role": "user", "content": prompt}
         ],
         temperature=0.2,
-        api_key=gemini_key
+        api_key=gemini_key,
+        enable_search=True
     )
     cost_entry = extract_cost_entry(response, step_label, used_model)
     content = response.choices[0].message.content or ""
@@ -499,7 +543,7 @@ def gemini_draft_node(state: AgentState) -> dict:
     return {
         "raw_draft": content,
         "cost_ledger": state.get("cost_ledger", []) + [cost_entry],
-        "logs": state.get("logs", []) + [f"🔷 [{step_label} ({used_model.split('/')[-1]})] 완료 (비용: {cost_entry['실제 비용(원)']:.2f}원)"]
+        "logs": state.get("logs", []) + [f"🔷 [{step_label} ({used_model.split('/')[-1]} | 실시간 웹검색)] 완료 (비용: {cost_entry['실제 비용(원)']:.2f}원)"]
     }
 
 # [Node 2: Regex 전처리 필터] (인사말 제거, 핵심 코드/본문만 추출)
@@ -675,7 +719,8 @@ def gemini_merge_node(state: AgentState) -> dict:
     response, used_model = call_gemini_with_fallback(
         messages=[{"role": "user", "content": prompt}],
         temperature=0.1,
-        api_key=gemini_key
+        api_key=gemini_key,
+        enable_search=False
     )
     merged_raw = response.choices[0].message.content or ""
     cost_entry = extract_cost_entry(response, step_label, used_model)

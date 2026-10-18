@@ -83,11 +83,14 @@ MODEL_PRICING_PER_1M = {
     "gemini/gemini-3.1-pro-preview": {"input": 1.25, "output": 5.00, "cache_discount": 0.75},
     "gemini/gemini-2.0-flash": {"input": 0.10, "output": 0.40, "cache_discount": 0.75},
     "gemini/gemini-1.5-flash": {"input": 0.075, "output": 0.30, "cache_discount": 0.75},
+    "anthropic/claude-3-5-haiku-20241022": {"input": 0.80, "output": 4.00, "cache_discount": 0.90},
+    "anthropic/claude-3-haiku-20240307": {"input": 0.25, "output": 1.25, "cache_discount": 0.90},
     "anthropic/claude-3-5-haiku-latest": {"input": 0.80, "output": 4.00, "cache_discount": 0.90},
-    "claude-3-5-haiku-latest": {"input": 0.80, "output": 4.00, "cache_discount": 0.90},
-    "claude-3-5-haiku-20241022": {"input": 0.80, "output": 4.00, "cache_discount": 0.90},
-    "claude-3-haiku-20240307": {"input": 0.25, "output": 1.25, "cache_discount": 0.90},
+    "anthropic/claude-3-5-sonnet-20241022": {"input": 3.00, "output": 15.00, "cache_discount": 0.90},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60, "cache_discount": 0.50},
+    "openai/gpt-4o-mini": {"input": 0.15, "output": 0.60, "cache_discount": 0.50},
+    "gpt-4o": {"input": 2.50, "output": 10.00, "cache_discount": 0.50},
+    "openai/gpt-4o": {"input": 2.50, "output": 10.00, "cache_discount": 0.50},
 }
 
 def call_gemini_with_fallback(messages: list, temperature: float, api_key: str):
@@ -125,9 +128,10 @@ def call_gemini_with_fallback(messages: list, temperature: float, api_key: str):
 def call_claude_with_fallback(messages: list, max_tokens: int, temperature: float, api_key: str):
     """Anthropic Claude 모델 호출 및 버전별 자동 폴백 지원"""
     candidate_models = [
+        "anthropic/claude-3-5-haiku-20241022",
+        "anthropic/claude-3-haiku-20240307",
         "anthropic/claude-3-5-haiku-latest",
-        "claude-3-5-haiku-20241022",
-        "claude-3-haiku-20240307",
+        "anthropic/claude-3-5-sonnet-20241022",
     ]
     last_err = None
     for m in candidate_models:
@@ -135,6 +139,33 @@ def call_claude_with_fallback(messages: list, max_tokens: int, temperature: floa
             resp = litellm.completion(
                 model=m,
                 messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                api_key=api_key,
+                custom_llm_provider="anthropic"
+            )
+            return resp, m
+        except Exception as e:
+            last_err = e
+            continue
+    if last_err:
+        raise last_err
+
+def call_gpt_with_fallback(messages: list, max_tokens: int, temperature: float, api_key: str):
+    """OpenAI ChatGPT 모델 호출 및 버전별 자동 폴백 지원"""
+    candidate_models = [
+        "gpt-4o-mini",
+        "openai/gpt-4o-mini",
+        "gpt-4o",
+        "openai/gpt-4o",
+    ]
+    last_err = None
+    for m in candidate_models:
+        try:
+            resp = litellm.completion(
+                model=m,
+                messages=messages,
+                response_format={"type": "json_object"},
                 max_tokens=max_tokens,
                 temperature=temperature,
                 api_key=api_key
@@ -558,13 +589,11 @@ def gpt_validator_node(state: AgentState) -> dict:
         f"[Claude 1차 검증 내역]\n{state['claude_feedback']}"
     )
     
-    response = litellm.completion(
-        model=model_name,
+    response, used_model = call_gpt_with_fallback(
         messages=[
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content": user_content}
         ],
-        response_format={"type": "json_object"},
         max_tokens=600,
         temperature=0.0,
         api_key=openai_key
@@ -577,7 +606,7 @@ def gpt_validator_node(state: AgentState) -> dict:
     except Exception:
         status = "PASS"
 
-    cost_entry = extract_cost_entry(response, step_label, model_name)
+    cost_entry = extract_cost_entry(response, step_label, used_model)
 
     return {
         "gpt_feedback": gpt_json_str,

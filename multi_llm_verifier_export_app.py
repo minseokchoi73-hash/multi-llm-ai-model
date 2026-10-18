@@ -11,6 +11,7 @@ import json
 import textwrap
 import time
 import urllib.request
+import html
 from datetime import datetime
 from typing import TypedDict, List, Literal, Dict, Any
 import streamlit as st
@@ -100,8 +101,15 @@ MODEL_PRICING_PER_1M = {
     "openai/gpt-4o": {"input": 2.50, "output": 10.00, "cache_discount": 0.50},
 }
 
-def call_gemini_with_fallback(messages: list, temperature: float, api_key: str):
-    """Google Gemini 무료 티어 공식 플래시 모델군 순차 호출 및 장애 시 자동 폴백"""
+SAFETY_SETTINGS_PERMISSIVE = [
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+]
+
+def call_gemini_with_fallback(messages: list, temperature: float, api_key: str, enable_search: bool = True):
+    """Google Gemini 무료 티어 공식 플래시 모델군 순차 호출 및 장애 시 자동 폴백 (웹 검색 그라운딩 자동 지원)"""
     candidate_models = [
         "gemini/gemini-2.5-flash",
         "gemini/gemini-2.0-flash",
@@ -112,24 +120,34 @@ def call_gemini_with_fallback(messages: list, temperature: float, api_key: str):
     ]
     last_err = None
     for m in candidate_models:
-        for attempt in range(2):
-            try:
-                resp = litellm.completion(
-                    model=m,
-                    messages=messages,
-                    temperature=temperature,
-                    api_key=api_key,
-                    custom_llm_provider="gemini"
-                )
-                return resp, m
-            except Exception as e:
-                last_err = e
-                err_str = str(e).lower()
-                # 503 일시적 과부하/스파이크 발생 시 1회 1.2초 대기 후 재시도
-                if any(k in err_str for k in ["503", "high demand", "unavailable", "temporarily unavailable"]) and attempt == 0:
-                    time.sleep(1.2)
-                    continue
-                break  # 다른 에러이거나 재시도 실패 시 다음 무료 플래시 모델로 즉시 전환
+        search_trials = [True, False] if enable_search else [False]
+        for use_search in search_trials:
+            for attempt in range(2):
+                try:
+                    kwargs = {
+                        "model": m,
+                        "messages": messages,
+                        "temperature": temperature,
+                        "api_key": api_key,
+                        "safety_settings": SAFETY_SETTINGS_PERMISSIVE,
+                        "custom_llm_provider": "gemini"
+                    }
+                    if use_search:
+                        kwargs["tools"] = [{"type": "web_search"}]
+                    resp = litellm.completion(**kwargs)
+                    resp_content = ""
+                    if resp and hasattr(resp, "choices") and resp.choices:
+                        resp_content = getattr(resp.choices[0].message, "content", "") or ""
+                    if not resp_content.strip():
+                        raise ValueError(f"Model {m} returned empty content (search={use_search})")
+                    return resp, m
+                except Exception as e:
+                    last_err = e
+                    err_str = str(e).lower()
+                    if any(k in err_str for k in ["503", "high demand", "unavailable", "temporarily unavailable"]) and attempt == 0:
+                        time.sleep(1.2)
+                        continue
+                    break  # 재시도 실패 시 검색 미사용 또는 다음 모델로 전환
     if last_err:
         raise last_err
 
@@ -340,6 +358,41 @@ def build_export_pdf(state_vals: Dict[str, Any], ts_str: str) -> bytes:
         borderPadding=8,
         spaceAfter=10
     )
+    report_h1_style = ParagraphStyle(
+        "PDFReportH1",
+        fontName=font_name,
+        fontSize=13,
+        leading=18,
+        textColor=colors.HexColor("#0F172A"),
+        spaceBefore=10,
+        spaceAfter=4
+    )
+    report_h2_style = ParagraphStyle(
+        "PDFReportH2",
+        fontName=font_name,
+        fontSize=11,
+        leading=16,
+        textColor=colors.HexColor("#1E293B"),
+        spaceBefore=8,
+        spaceAfter=3
+    )
+    report_body_style = ParagraphStyle(
+        "PDFReportBody",
+        fontName=font_name,
+        fontSize=9.5,
+        leading=15,
+        textColor=colors.HexColor("#334155"),
+        spaceAfter=4
+    )
+    report_bullet_style = ParagraphStyle(
+        "PDFReportBullet",
+        fontName=font_name,
+        fontSize=9,
+        leading=14,
+        textColor=colors.HexColor("#334155"),
+        leftIndent=14,
+        spaceAfter=3
+    )
 
     story = []
 
@@ -379,17 +432,58 @@ def build_export_pdf(state_vals: Dict[str, Any], ts_str: str) -> bytes:
     story.append(Spacer(1, 10))
 
     # 3. 최종 검증 완료 산출물
-    content_type_str = "파이썬 코드" if state_vals.get("is_python_code") else "리포트 본문"
+    is_py = state_vals.get("is_python_code", False)
+    content_type_str = "파이썬 코드" if is_py else "리포트 본문"
     story.append(Paragraph(f"최종 검증 완료 산출물 ({content_type_str})", section_style))
     raw_content = state_vals.get("clean_content", "").strip() or "출력 내용 없음"
-    wrapped_lines = []
-    for line in raw_content.split("\n"):
-        if len(line) > 90:
-            wrapped_lines.extend(textwrap.wrap(line, width=90, break_long_words=True))
-        else:
-            wrapped_lines.append(line)
-    wrapped_code = "\n".join(wrapped_lines)
-    story.append(Preformatted(wrapped_code, code_block_style))
+
+    if is_py or raw_content == "출력 내용 없음":
+        wrapped_lines = []
+        for line in raw_content.split("\n"):
+            if len(line) > 90:
+                wrapped_lines.extend(textwrap.wrap(line, width=90, break_long_words=True))
+            else:
+                wrapped_lines.append(line)
+        wrapped_code = "\n".join(wrapped_lines)
+        story.append(Preformatted(wrapped_code, code_block_style))
+    else:
+        # 일반 보고서/마크다운 형식 구조화 렌더링
+        in_code = False
+        code_lines = []
+        for line in raw_content.split("\n"):
+            s_line = line.strip()
+            if s_line.startswith("```"):
+                if in_code:
+                    in_code = False
+                    story.append(Preformatted("\n".join(code_lines), code_block_style))
+                    code_lines = []
+                else:
+                    in_code = True
+                    code_lines = []
+                continue
+            if in_code:
+                code_lines.append(line)
+                continue
+            if not s_line:
+                story.append(Spacer(1, 4))
+                continue
+            if s_line.startswith("# "):
+                story.append(Paragraph(html.escape(s_line[2:]), report_h1_style))
+            elif s_line.startswith("## "):
+                story.append(Paragraph(html.escape(s_line[3:]), report_h2_style))
+            elif s_line.startswith("### "):
+                story.append(Paragraph(html.escape(s_line[4:]), report_h2_style))
+            elif s_line.startswith("- ") or s_line.startswith("* "):
+                clean = html.escape(s_line[2:])
+                clean = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", clean)
+                story.append(Paragraph("&bull; " + clean, report_bullet_style))
+            else:
+                clean = html.escape(s_line)
+                clean = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", clean)
+                story.append(Paragraph(clean, report_body_style))
+
+        if code_lines:
+            story.append(Preformatted("\n".join(code_lines), code_block_style))
 
     # 4. 단계별 감사 로그 요약
     logs = state_vals.get("logs", [])
@@ -501,16 +595,16 @@ def gemini_draft_node(state: AgentState) -> dict:
 
     now = datetime.now()
     current_date = now.strftime("%Y년 %m월 %d일")
-    past_cutoff_year = now.year - 2
     sys_prompt = (
-        f"당신은 실시간 최신 정보 분석과 최고 수준의 전문성을 갖춘 수석 연구원 겸 전문 엔지니어입니다. "
-        f"사용자가 질의를 요청한 바로 오늘, 실시간 현재 시점은 {current_date}입니다.\n"
+        f"당신은 실시간 최신 정보 분석과 최고 수준의 전문성을 갖춘 수석 연구원 겸 전문 소프트웨어 엔지니어입니다. "
+        f"사용자가 질의를 요청한 현재 시점은 {current_date}입니다.\n"
         f"[필수 작성 지침]\n"
-        f"1. 실시간 시점 전면 반영: 과거({past_cutoff_year}년 이전 등) 모델의 고정 학습 데이터 시점에 머무르지 말고, "
-        f"반드시 실시간 구글 검색(Google Search)을 활용하여 오늘({current_date}) 기준의 가장 최신 진행 상황, "
-        f"최근 법안 처리/의결 현황, 규제 기관 및 의회 입장, 최신 쟁점 및 향후 전망을 빠짐없이 상세히 반영하여 보고서를 작성하십시오.\n"
-        f"2. 직접 작성: 인사말(안녕하세요 등)이나 불필요한 메타 서술 없이 즉시 완성된 최종 본문/리포트만 출력하십시오.\n"
-        f"3. 코드 요청인 경우: 반드시 마크다운 코드 블록(```python ... ```)으로 감싸십시오."
+        f"1. 최신 시점 전면 반영: 과거의 고정 학습 데이터 시점에 국한되지 말고, "
+        f"현재({current_date}) 기준의 가장 최신 진행 상황, 최근 입법/의결 경과, 규제 기관(SEC, CFTC, 연준 등) 및 의회 동향, "
+        f"핵심 쟁점과 향후 전망을 체계적이고 깊이 있게 분석하여 전문 보고서를 작성하십시오.\n"
+        f"2. 직접 작성: '안녕하세요'와 같은 불필요한 인사말이나 서두 메타 설명 없이, 즉시 제목과 본문으로 구성된 완성된 산출물만 출력하십시오.\n"
+        f"3. 보고서 형식: 개요 및 배경, 주요 조항 및 핵심 내용, 최근 동향 및 진행 경과, 시장 및 산업 영향, 향후 전망 및 시사점 등 체계적인 소제목(헤딩)과 글머리 기호를 사용하여 전문 보고서 규격으로 작성하십시오.\n"
+        f"4. 코드 요청인 경우: 반드시 마크다운 코드 블록(```python ... ```)으로 감싸서 출력하십시오."
     )
 
     response, used_model = call_gemini_with_fallback(
@@ -518,31 +612,61 @@ def gemini_draft_node(state: AgentState) -> dict:
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content": prompt}
         ],
-        temperature=0.2,
-        api_key=gemini_key
+        temperature=0.3,
+        api_key=gemini_key,
+        enable_search=True
     )
     cost_entry = extract_cost_entry(response, step_label, used_model)
     content = response.choices[0].message.content or ""
-    
+    if not content.strip():
+        raise ValueError(f"Gemini({used_model})가 빈 응답을 반환했습니다. 재시도해 주십시오.")
+
     return {
         "raw_draft": content,
         "cost_ledger": state.get("cost_ledger", []) + [cost_entry],
         "logs": state.get("logs", []) + [f"🔷 [{step_label} ({used_model.split('/')[-1]})] 완료 (비용: {cost_entry['실제 비용(원)']:.2f}원)"]
     }
 
-# [Node 2: Regex 전처리 필터] (인사말 제거, 핵심 코드/본문만 추출)
+def clean_and_extract_content(text: str, user_query: str = "", default_is_py: bool = False) -> tuple[str, bool]:
+    """초안 및 병합 텍스트에서 불필요한 메타/인사말을 정제하고 본문을 절대 유실하지 않는 전처리 함수"""
+    raw = (text or "").strip()
+    if not raw:
+        return "", default_is_py
+
+    query_lower = (user_query or "").lower()
+    is_code_requested = any(w in query_lower for w in ["코드", "스크립트", "함수", "파이썬", "python", "code", "def ", "class "]) or default_is_py
+
+    # 1. 텍스트 전체가 ```markdown ... ``` 또는 ```text ... ``` 단일 블록으로 감싸진 경우 언래핑
+    unwrap_match = re.match(r"^```(?:\w+)?\s*\n(.*?)\n```$", raw, re.DOTALL)
+    if unwrap_match:
+        unwrapped = unwrap_match.group(1).strip()
+        if unwrapped:
+            raw = unwrapped
+
+    # 2. 파이썬 코드 요청인 경우 python 코드 블록 우선 추출
+    py_blocks = re.findall(r"```(?:python|py)\s*\n(.*?)```", raw, re.DOTALL | re.IGNORECASE)
+    if is_code_requested and py_blocks:
+        extracted = "\n\n".join(b.strip() for b in py_blocks).strip()
+        if extracted:
+            return extracted, True
+
+    # 3. 일반 리포트 / 텍스트 본문인 경우: 본문 서두의 대화형 인사말만 제거
+    cleaned = re.sub(
+        r"^(?:네[,\.]?\s*|안녕하세요[\.!\s]*|반갑습니다[\.!\s]*|요청하신[^\n]*입니다[\.!\s]*\n*)+",
+        "",
+        raw,
+        flags=re.IGNORECASE
+    ).strip()
+
+    # 4. 방어 로직: 정제 후 비어있으면 원본 보존
+    final_text = cleaned if cleaned else raw
+    return final_text, is_code_requested
+
+# [Node 2: Regex 전처리 필터] (인사말 제거, 핵심 코드/본문 안전 보존)
 def regex_preprocess_node(state: AgentState) -> dict:
     text = state.get("raw_draft", "")
-    py_blocks = re.findall(r"```(?:python|py)?\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
-    any_blocks = re.findall(r"```(?:\w+)?\s*\n(.*?)```", text, re.DOTALL)
-
-    if py_blocks:
-        clean_text, is_py = "\n\n".join(b.strip() for b in py_blocks), True
-    elif any_blocks:
-        clean_text, is_py = "\n\n".join(b.strip() for b in any_blocks), False
-    else:
-        clean_text = re.sub(r"^(네,|안녕하세요|요청하신|반갑습니다).*?\n+", "", text.strip(), flags=re.IGNORECASE)
-        is_py = False
+    user_query = state.get("user_query", "")
+    clean_text, is_py = clean_and_extract_content(text, user_query=user_query, default_is_py=False)
 
     return {
         "clean_content": clean_text,
@@ -557,6 +681,14 @@ def claude_validator_node(state: AgentState) -> dict:
     step_label = f"Node 3: Claude 1차 검증 (L{loop_num})"
 
     claude_key = get_api_key("ANTHROPIC_API_KEY")
+    clean_target = (state.get("clean_content") or "").strip()
+    if not clean_target:
+        return {
+            "claude_feedback": '{"status": "PASS", "modifications": []}',
+            "cost_ledger": state.get("cost_ledger", []),
+            "logs": state.get("logs", []) + [f"🟣 [{step_label}] 검증 대상 본문 없음 (PASS 처리)"]
+        }
+
     if not claude_key:
         mock_feedback = json.dumps({
             "status": "MODIFY" if loop_num == 1 else "PASS",
@@ -608,6 +740,15 @@ def gpt_validator_node(state: AgentState) -> dict:
     step_label = f"Node 4: ChatGPT 최종 검증 (L{loop_num})"
 
     openai_key = get_api_key("OPENAI_API_KEY")
+    clean_target = (state.get("clean_content") or "").strip()
+    if not clean_target:
+        return {
+            "gpt_feedback": '{"status": "PASS", "modifications": []}',
+            "status": "PASS",
+            "iteration": loop_num,
+            "cost_ledger": state.get("cost_ledger", []),
+            "logs": state.get("logs", []) + [f"🟢 [{step_label}] 검증 대상 본문 없음 (PASS 확정)"]
+        }
     if not openai_key:
         mock_feedback = state.get("claude_feedback", "{}")
         try:
@@ -708,16 +849,11 @@ def gemini_merge_node(state: AgentState) -> dict:
     )
     merged_raw = response.choices[0].message.content or ""
     cost_entry = extract_cost_entry(response, step_label, used_model)
-
-    py_blocks = re.findall(r"```(?:python|py)?\s*\n(.*?)```", merged_raw, re.DOTALL | re.IGNORECASE)
-    any_blocks = re.findall(r"```(?:\w+)?\s*\n(.*?)```", merged_raw, re.DOTALL)
-    if py_blocks:
-        clean_text, is_py = "\n\n".join(b.strip() for b in py_blocks), True
-    elif any_blocks:
-        clean_text, is_py = "\n\n".join(b.strip() for b in any_blocks), False
-    else:
-        clean_text = re.sub(r"^(네,|안녕하세요|요청하신|반갑습니다).*?\n+", "", merged_raw.strip(), flags=re.IGNORECASE)
-        is_py = state.get("is_python_code", False)
+    clean_text, is_py = clean_and_extract_content(
+        merged_raw,
+        user_query=state.get("user_query", ""),
+        default_is_py=state.get("is_python_code", False)
+    )
 
     return {
         "raw_draft": merged_raw,

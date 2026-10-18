@@ -100,8 +100,8 @@ MODEL_PRICING_PER_1M = {
     "openai/gpt-4o": {"input": 2.50, "output": 10.00, "cache_discount": 0.50},
 }
 
-def call_gemini_with_fallback(messages: list, temperature: float, api_key: str, enable_search: bool = True):
-    """Google Gemini 무료 티어 공식 플래시 모델군 순차 호출 및 장애 시 자동 폴백 (실시간 Google Search Grounding 지원)"""
+def call_gemini_with_fallback(messages: list, temperature: float, api_key: str):
+    """Google Gemini 무료 티어 공식 플래시 모델군 순차 호출 및 장애 시 자동 폴백"""
     candidate_models = [
         "gemini/gemini-2.5-flash",
         "gemini/gemini-2.0-flash",
@@ -110,38 +110,21 @@ def call_gemini_with_fallback(messages: list, temperature: float, api_key: str, 
         "gemini/gemini-2.0-flash-lite",
         "gemini/gemini-1.5-flash-8b",
     ]
-    tools = [{"googleSearch": {}}] if enable_search else None
     last_err = None
     for m in candidate_models:
         for attempt in range(2):
             try:
-                kwargs = {
-                    "model": m,
-                    "messages": messages,
-                    "temperature": temperature,
-                    "api_key": api_key,
-                    "custom_llm_provider": "gemini",
-                }
-                if tools:
-                    kwargs["tools"] = tools
-                resp = litellm.completion(**kwargs)
+                resp = litellm.completion(
+                    model=m,
+                    messages=messages,
+                    temperature=temperature,
+                    api_key=api_key,
+                    custom_llm_provider="gemini"
+                )
                 return resp, m
             except Exception as e:
                 last_err = e
                 err_str = str(e).lower()
-                # 툴 호출 미지원 시 툴 없이 1회 재시도
-                if tools and any(k in err_str for k in ["tool", "googlesearch", "function"]):
-                    try:
-                        resp = litellm.completion(
-                            model=m,
-                            messages=messages,
-                            temperature=temperature,
-                            api_key=api_key,
-                            custom_llm_provider="gemini",
-                        )
-                        return resp, m
-                    except Exception as e2:
-                        last_err = e2
                 # 503 일시적 과부하/스파이크 발생 시 1회 1.2초 대기 후 재시도
                 if any(k in err_str for k in ["503", "high demand", "unavailable", "temporarily unavailable"]) and attempt == 0:
                     time.sleep(1.2)
@@ -536,8 +519,7 @@ def gemini_draft_node(state: AgentState) -> dict:
             {"role": "user", "content": prompt}
         ],
         temperature=0.2,
-        api_key=gemini_key,
-        enable_search=True
+        api_key=gemini_key
     )
     cost_entry = extract_cost_entry(response, step_label, used_model)
     content = response.choices[0].message.content or ""
@@ -545,7 +527,7 @@ def gemini_draft_node(state: AgentState) -> dict:
     return {
         "raw_draft": content,
         "cost_ledger": state.get("cost_ledger", []) + [cost_entry],
-        "logs": state.get("logs", []) + [f"🔷 [{step_label} ({used_model.split('/')[-1]} | 실시간 웹검색)] 완료 (비용: {cost_entry['실제 비용(원)']:.2f}원)"]
+        "logs": state.get("logs", []) + [f"🔷 [{step_label} ({used_model.split('/')[-1]})] 완료 (비용: {cost_entry['실제 비용(원)']:.2f}원)"]
     }
 
 # [Node 2: Regex 전처리 필터] (인사말 제거, 핵심 코드/본문만 추출)

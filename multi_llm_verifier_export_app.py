@@ -75,22 +75,30 @@ class AgentState(TypedDict):
 # 2. 모델 단가 및 비용 계산
 # ==========================================
 MODEL_PRICING_PER_1M = {
-    "gemini/gemini-3.1-pro-preview": {"input": 1.25, "output": 5.00, "cache_discount": 0.75},
-    "gemini/gemini-2.5-pro": {"input": 1.25, "output": 5.00, "cache_discount": 0.75},
     "gemini/gemini-2.5-flash": {"input": 0.15, "output": 0.60, "cache_discount": 0.75},
-    "gemini/gemini-1.5-pro": {"input": 1.25, "output": 5.00, "cache_discount": 0.75},
+    "gemini/gemini-flash-latest": {"input": 0.15, "output": 0.60, "cache_discount": 0.75},
+    "gemini/gemini-2.5-flash-lite": {"input": 0.075, "output": 0.30, "cache_discount": 0.75},
+    "gemini/gemini-2.5-pro": {"input": 1.25, "output": 5.00, "cache_discount": 0.75},
+    "gemini/gemini-pro-latest": {"input": 1.25, "output": 5.00, "cache_discount": 0.75},
+    "gemini/gemini-3.1-pro-preview": {"input": 1.25, "output": 5.00, "cache_discount": 0.75},
+    "gemini/gemini-2.0-flash": {"input": 0.10, "output": 0.40, "cache_discount": 0.75},
     "gemini/gemini-1.5-flash": {"input": 0.075, "output": 0.30, "cache_discount": 0.75},
     "anthropic/claude-3-5-haiku-latest": {"input": 0.80, "output": 4.00, "cache_discount": 0.90},
+    "claude-3-5-haiku-latest": {"input": 0.80, "output": 4.00, "cache_discount": 0.90},
+    "claude-3-5-haiku-20241022": {"input": 0.80, "output": 4.00, "cache_discount": 0.90},
+    "claude-3-haiku-20240307": {"input": 0.25, "output": 1.25, "cache_discount": 0.90},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60, "cache_discount": 0.50},
 }
 
 def call_gemini_with_fallback(messages: list, temperature: float, api_key: str):
-    """Google Gemini 최신 모델(3.1-pro-preview) 호출 및 모델 버전별 자동 폴백 지원"""
+    """Google Gemini 무료 티어 공식 모델(gemini-2.5-flash) 최우선 호출 및 쿼터/버전 에러 시 자동 폴백"""
     candidate_models = [
-        "gemini/gemini-3.1-pro-preview",
         "gemini/gemini-2.5-flash",
-        "gemini/gemini-1.5-pro",
-        "gemini/gemini-1.5-flash",
+        "gemini/gemini-flash-latest",
+        "gemini/gemini-2.5-flash-lite",
+        "gemini/gemini-2.5-pro",
+        "gemini/gemini-pro-latest",
+        "gemini/gemini-3.1-pro-preview",
     ]
     last_err = None
     for m in candidate_models:
@@ -102,15 +110,39 @@ def call_gemini_with_fallback(messages: list, temperature: float, api_key: str):
                 api_key=api_key
             )
             return resp, m
-        except litellm.NotFoundError as e:
+        except (litellm.RateLimitError, litellm.NotFoundError) as e:
             last_err = e
             continue
         except Exception as e:
             err_str = str(e).lower()
-            if "not_found" in err_str or "no longer available" in err_str or "404" in err_str:
+            if any(k in err_str for k in ["429", "quota", "resource_exhausted", "rate_limit", "404", "not_found", "no longer available", "limit: 0"]):
                 last_err = e
                 continue
             raise e
+    if last_err:
+        raise last_err
+
+def call_claude_with_fallback(messages: list, max_tokens: int, temperature: float, api_key: str):
+    """Anthropic Claude 모델 호출 및 버전별 자동 폴백 지원"""
+    candidate_models = [
+        "anthropic/claude-3-5-haiku-latest",
+        "claude-3-5-haiku-20241022",
+        "claude-3-haiku-20240307",
+    ]
+    last_err = None
+    for m in candidate_models:
+        try:
+            resp = litellm.completion(
+                model=m,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                api_key=api_key
+            )
+            return resp, m
+        except Exception as e:
+            last_err = e
+            continue
     if last_err:
         raise last_err
 
@@ -473,15 +505,14 @@ def claude_validator_node(state: AgentState) -> dict:
         {"role": "system", "content": [{"type": "text", "text": sys_prompt, "cache_control": {"type": "ephemeral"}}]},
         {"role": "user", "content": [{"type": "text", "text": f"[검증 대상 본문]\n{state['clean_content']}", "cache_control": {"type": "ephemeral"}}]}
     ]
-    response = litellm.completion(
-        model=model_name,
+    response, used_model = call_claude_with_fallback(
         messages=messages,
         max_tokens=600,
         temperature=0.0,
         api_key=claude_key
     )
     feedback = response.choices[0].message.content or "{}"
-    cost_entry = extract_cost_entry(response, step_label, model_name)
+    cost_entry = extract_cost_entry(response, step_label, used_model)
 
     return {
         "claude_feedback": feedback,
